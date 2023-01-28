@@ -1,0 +1,180 @@
+import numpy as np
+import torch as th
+from joblib import Parallel, delayed
+import pandas as pd
+import os, sys
+import pickle
+sys.path.append("/home/shenchao/rtmscorepyg/code")
+from torch_geometric.loader import DataLoader
+from GenScore.data.data import VSDataset
+from GenScore.model.utils import run_an_eval_epoch
+from GenScore.model.model import GenScore, GraphTransformer, GatedGCN
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+args={}
+args["batch_size"] = 128
+args["dist_threhold"] = 5.
+args['device'] = 'cuda' if th.cuda.is_available() else 'cpu'
+args['seeds'] = 126
+args["num_workers"] = 48
+args["model_path"] = "/home/shenchao/rtmscorepyg/code/trained_models/GatedGCN_ft_1.0_1.pth"
+args["cutoff"] = 10.0
+args["encoder"] = "gatedgcn"
+args["num_node_featsp"] = 41
+args["num_node_featsl"] = 41
+args["num_edge_featsp"] = 5
+args["num_edge_featsl"] = 10
+args["hidden_dim0"] = 128 
+args["hidden_dim"] = 128
+args["n_gaussians"] = 10
+args["dropout_rate"] = 0.15
+args["outprefix"] = "gatedgcn1x5"
+
+def scoring(prot, lig, modpath,
+			cut=10.0,
+			explicit_H=False, 
+			use_chirality=True,
+			parallel=False,
+			**kwargs
+			):
+	"""
+	prot: The input protein file ('.pdb')
+	lig: The input ligand file ('.sdf|.mol2', multiple ligands are supported)
+	modpath: The path to store the pre-trained model
+	gen_pocket: whether to generate the pocket from the protein file.
+	reflig: The reference ligand to determine the pocket.
+	cutoff: The distance within the reference ligand to determine the pocket.
+	explicit_H: whether to use explicit hydrogen atoms to represent the molecules.
+	use_chirality: whether to adopt the information of chirality to represent the molecules.	
+	parallel: whether to generate the graphs in parallel. (This argument is suitable for the situations when there are lots of ligands/poses)
+	kwargs: other arguments related with model
+	"""
+	#try:
+	data = VSDataset(ligs=lig,
+					prot=prot,
+					cutoff=cut,		
+					explicit_H=explicit_H, 
+					use_chirality=use_chirality,
+					parallel=parallel)
+						
+	test_loader = DataLoader(dataset=data, 
+							batch_size=kwargs["batch_size"],
+							shuffle=False, 
+							num_workers=kwargs["num_workers"])
+	
+	if kwargs["encoder"] == "gt":
+		ligmodel = GraphTransformer(in_channels=kwargs["num_node_featsl"], 
+									edge_features=kwargs["num_edge_featsl"], 
+									num_hidden_channels=kwargs["hidden_dim0"],
+									activ_fn=th.nn.SiLU(),
+									transformer_residual=True,
+									num_attention_heads=4,
+									norm_to_apply='batch',
+									dropout_rate=0.15,
+									num_layers=6
+									)
+		
+		protmodel = GraphTransformer(in_channels=kwargs["num_node_featsp"], 
+									edge_features=kwargs["num_edge_featsp"], 
+									num_hidden_channels=kwargs["hidden_dim0"],
+									activ_fn=th.nn.SiLU(),
+									transformer_residual=True,
+									num_attention_heads=4,
+									norm_to_apply='batch',
+									dropout_rate=0.15,
+									num_layers=6
+									)
+	elif kwargs["encoder"] == "gatedgcn":
+		ligmodel = GatedGCN(in_channels=kwargs["num_node_featsl"], 
+							edge_features=kwargs["num_edge_featsl"], 
+							num_hidden_channels=kwargs["hidden_dim0"], 
+							residual=True,
+							dropout_rate=0.15,
+							equivstable_pe=False,
+							num_layers=6
+							)
+		
+		protmodel = GatedGCN(in_channels=kwargs["num_node_featsp"], 
+							edge_features=kwargs["num_edge_featsp"], 
+							num_hidden_channels=kwargs["hidden_dim0"], 
+							residual=True,
+							dropout_rate=0.15,
+							equivstable_pe=False,
+							num_layers=6
+							)
+	else:
+		raise ValueError("encoder should be \"gt\" or \"gatedgcn\"!")
+						
+	model = GenScore(ligmodel, protmodel, 
+					in_channels=kwargs["hidden_dim0"], 
+					hidden_dim=kwargs["hidden_dim"], 
+					n_gaussians=kwargs["n_gaussians"], 
+					dropout_rate=kwargs["dropout_rate"], 
+					dist_threhold=kwargs["dist_threhold"]).to(kwargs['device'])
+	
+	checkpoint = th.load(modpath, map_location=th.device(kwargs['device']))
+	model.load_state_dict(checkpoint['model_state_dict']) 
+	preds = run_an_eval_epoch(model, test_loader, pred=True, dist_threhold=kwargs['dist_threhold'], device=kwargs['device'])	
+	return data.ids, preds
+	#except:
+	#	print("failed to scoring for {} and {}".format(prot, lig))
+	#	return None, None
+
+
+
+def score_compound(pdbid, ligid, prefix, **args):
+	return scoring(prot="/home/shenchao/pdbbind/%s/%s/%s_prot/%s_p_pocket_10.0.pdb"%(prefix, pdbid, pdbid, pdbid), 
+					lig="/home/shenchao/test/CASF-2016/decoys_screening/%s/%s_%s.sdf"%(pdbid, pdbid, ligid),
+					modpath=args["model_path"],
+					cut=args["cutoff"],
+					explicit_H=False, 
+					use_chirality=True,
+					parallel=True,
+					**args
+					)
+
+
+def score_compound2(pdbid, prefix, ligids, **args):
+	print("%s started....."%pdbid)
+	ids_list = []
+	scores_list = []
+	for ligid in ligids:
+		ids, scores = score_compound(pdbid, ligid, prefix, **args)
+		if ids is not None and scores is not None:
+			ids_list.extend(ids)
+			scores_list.extend(scores)
+	print("%s finished....."%pdbid)
+	return pdbid, [ids_list, scores_list]
+
+	
+ligids = [x for x in os.listdir('/home/shenchao/test/CASF-2016/coreset') if os.path.isdir("/home/shenchao/test/CASF-2016/coreset/%s"%(x))]
+pdbids = [x for x in os.listdir("/home/shenchao/test/CASF-2016/decoys_screening") if os.path.isdir("/home/shenchao/test/CASF-2016/decoys_screening/%s"%(x))]	
+pdbids1 = [x for x in os.listdir("/home/shenchao/pdbbind/v2020-refined") if os.path.isdir("/home/shenchao/pdbbind/v2020-refined/%s"%(x))]	
+pdbids2 = [x for x in os.listdir("/home/shenchao/pdbbind/v2020-other-PL") if os.path.isdir("/home/shenchao/pdbbind/v2020-other-PL/%s"%(x))]	
+
+ids1 = [pdbid for pdbid in pdbids if pdbid in pdbids1]
+ids2 = [pdbid for pdbid in pdbids if pdbid in pdbids2]
+if args['device'] == 'cpu':
+	results1 = Parallel(n_jobs=-1, backend="threading")(delayed(score_compound2)(pdbid, "v2020-refined", ligids, **args) for pdbid in ids1)
+	results2 = Parallel(n_jobs=-1, backend="threading")(delayed(score_compound2)(pdbid, "v2020-other-PL", ligids, **args) for pdbid in ids2)
+	results = results1 + results2
+else:
+	results = []
+	for pdbid in ids1:
+		results.append(score_compound2(pdbid, "v2020-refined", ligids, **args))
+	for pdbid in ids2:
+		results.append(score_compound2(pdbid, "v2020-other-PL", ligids, **args))
+
+outdir = "/home/shenchao/test/CASF-2016/power_screening/examples/%s"%args["outprefix"]
+os.system("mkdir -p %s"%outdir)
+for res in results:
+	#pdbid = res[0][0].split("_")[0]
+	pdbid = res[0]
+	df = pd.DataFrame(zip(*res[1]),columns=["#code_ligand_num","score"])
+	df["#code_ligand_num"] = df["#code_ligand_num"].str.split("-").apply(lambda x : x[0])
+	df.to_csv("%s/%s_score.dat"%(outdir, pdbid), index=False, sep="\t")
+
+with open("%s_screening.pkl"%args["outprefix"],"wb") as dbFile:
+	pickle.dump(results,dbFile)
+
+
