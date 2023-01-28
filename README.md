@@ -2,7 +2,7 @@
 GenScore is a generalized protein-ligand scoring framework extended from RTMScore, and it exhibits balanced scoring, ranking, docking and screening powers on multiple datasets.
 
 <div align=center>
-<img src="https://github.com/sc8668/GenScore/blob/main/zzz-3.jpg" width="400px" height="225px">
+<img src="https://github.com/sc8668/GenScore/blob/main/zzz-3.jpg" width="600px" height="300px">
 </div> 
 
 
