@@ -4,7 +4,7 @@ The generated graphs for PDBbind-v2020 dataset when training the GenScore can be
 PDB entries employed for the validation of model 1/2/3.
 
 ### Setet/Setep 
-PDB entries for two subsets of CSAR NRC-HiQ benchmark ($Set____et___$ and $Set____ep___$).
+PDB entries for two subsets of CSAR NRC-HiQ benchmark ($Set_et$ and $Set_ep$).
 
 ### dekois_metrics.xlsx
 Various performance indicators for each target in the DEKOIS2.0 dataset.
