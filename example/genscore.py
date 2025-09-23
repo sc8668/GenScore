@@ -15,7 +15,7 @@ import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 #you need to set the babel libdir first if you need to generate the pocket
-os.environ["BABEL_LIBDIR"] = "/home/shenchao/.conda/envs/my3/lib/openbabel/3.1.0"
+# os.environ["BABEL_LIBDIR"] = "/home/shenchao/.conda/envs/my3/lib/openbabel/3.1.0"
 
 def Input():
 	p = argparse.ArgumentParser()
